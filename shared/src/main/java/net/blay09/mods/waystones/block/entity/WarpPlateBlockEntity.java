@@ -283,7 +283,10 @@ public class WarpPlateBlockEntity extends WaystoneBlockEntityBase implements Imp
 
     private void teleportToWarpPlate(Entity entity, IWaystone targetWaystone) {
         PlayerWaystoneManager.tryTeleportToWaystone(entity, targetWaystone, WarpMode.WARP_PLATE, getWaystone())
-                .ifLeft(entities -> entities.forEach(this::applyWarpPlateEffects));
+                .ifLeft(entities -> entities.stream()
+                        .peek(this::potentiallyReturnShard)
+                        .forEach(this::applyWarpPlateEffects)
+                );
     }
 
     private void applyWarpPlateEffects(Entity entity) {
@@ -341,6 +344,59 @@ public class WarpPlateBlockEntity extends WaystoneBlockEntityBase implements Imp
         }
     }
 
+    private void potentiallyReturnShard(Entity entity) {
+        if (!(entity instanceof Player player)) return;
+        int lapisSlot;
+        int shardSlot;
+
+        //we always ignore the central shard. let's see if top/down or left/right pairs have a lapis stack and a shard
+        //note we effectively look for lapis slots in the same order as in getTargetWaystone
+        if (getItem(1).getItem() == Items.LAPIS_LAZULI && getItem(3).getItem() instanceof IAttunementItem) {
+            lapisSlot = 1;
+            shardSlot = 3;
+        }
+        else if (getItem(2).getItem() == Items.LAPIS_LAZULI && getItem(4).getItem() instanceof IAttunementItem) {
+            lapisSlot = 2;
+            shardSlot = 4;
+        }
+        else if (getItem(3).getItem() == Items.LAPIS_LAZULI && getItem(1).getItem() instanceof IAttunementItem) {
+            lapisSlot = 3;
+            shardSlot = 1;
+        }
+        else if (getItem(4).getItem() == Items.LAPIS_LAZULI && getItem(2).getItem() instanceof IAttunementItem) {
+            lapisSlot = 4;
+            shardSlot = 2;
+        }
+        else return;
+
+        ItemStack lapiStack = getItem(lapisSlot);
+        ItemStack shardStack = getItem(shardSlot);
+
+        if (lapiStack.getCount() > 1) {
+            lapiStack.setCount(lapiStack.getCount() - 1);
+        }
+        else {
+            setItem(lapisSlot, ItemStack.EMPTY);
+            Player returnTo = null;
+
+            //identity the owner of the destination plate, return the shard to them (assuming in same dimension)
+            IWaystone destination = ((IAttunementItem) shardStack.getItem()).getWaystoneAttunedTo(level.getServer(), shardStack);
+            if (destination != null && destination.isValid() && destination.hasOwner()) {
+                returnTo = level.getPlayerByUUID(destination.getOwnerUid());
+            }
+            if (returnTo == null) {
+                returnTo = player;
+            }
+            //if we cannot give the shard back to destination's owner, we try to give it to the player that tp
+            if (returnTo != null) {
+                setItem(shardSlot, ItemStack.EMPTY);
+                if (!returnTo.addItem(shardStack)) {
+                    returnTo.drop(shardStack, false, true); //retain ownership but drop in front of owning player
+                }
+            }
+        }
+    }
+
     private boolean isReadyForAttunement() {
         return readyForAttunement
                 && getItem(0).getItem() == Items.FLINT
@@ -364,6 +420,26 @@ public class WarpPlateBlockEntity extends WaystoneBlockEntityBase implements Imp
             } else if (itemStack.getItem() == Items.QUARTZ) {
                 useRoundRobin = true;
             }
+            else if (itemStack.getItem() == Items.LAPIS_LAZULI && i > 0) {
+                int potentialTarget;
+                if (i > 2) {
+                    potentialTarget = i - 2;
+                }
+                else {
+                    potentialTarget = i + 2;
+                }
+
+                ItemStack potentialStack = getItem(potentialTarget);
+                if (potentialStack.getItem() instanceof IAttunementItem attunementItem) {
+                    //we force the destination to be the warp plate linked to the attuned shard across this lapis.
+                    //note that since the shard will ultimately be removed, we don't change the `lastAttunementSlot`
+                    IWaystone waystoneAttunedTo = attunementItem.getWaystoneAttunedTo(level.getServer(), potentialStack);
+                    if (waystoneAttunedTo != null && !waystoneAttunedTo.getWaystoneUid().equals(getWaystone().getWaystoneUid())) {
+                        return waystoneAttunedTo;
+                    }
+                }
+            }
+
         }
 
         if (!attunedShards.isEmpty()) {
